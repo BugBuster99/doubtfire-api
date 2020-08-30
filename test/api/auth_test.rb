@@ -1,9 +1,13 @@
 require 'test_helper'
+require 'logger'
 
 class AuthTest < ActiveSupport::TestCase
+# class AuthTest <  ActionDispatch::IntegrationTest
   include Rack::Test::Methods
   include TestHelpers::AuthHelper
   include TestHelpers::JsonHelper
+
+  logger = Logger.new(Rails.root.to_s + '/log/my_test.log')
 
   def app
     Rails.application
@@ -38,16 +42,15 @@ class AuthTest < ActiveSupport::TestCase
     # These match the model object... so can compare in loops
     user_keys = %w(id email first_name last_name username nickname receive_task_notifications receive_portfolio_notifications receive_feedback_notifications opt_in_to_research has_run_first_time_setup)
 
+    # Check the returned user matches the expected database value
     assert_json_matches_model(expected_auth, response_user_data, user_keys)
-
-    user_keys.each { |k| assert response_user_data.key?(k), "Response has key #{k}" }
-    user_keys.each { |k| assert_equal expected_auth[k], response_user_data[k], "Values for key #{k} match" }
 
     # Check other values returned
     assert_equal expected_auth.name, response_user_data['name'], 'Names match'
     assert_equal expected_auth.role.name, response_user_data['system_role'], 'Roles match'
 
-    assert_equal expected_auth.auth_token, actual_auth['auth_token']
+    # User has the token - count of matching tokens for that user is 1
+    assert_equal 1, expected_auth.auth_tokens.select{|t| t.authentication_token == actual_auth['auth_token']}.count
   end
 
   # Test auth when username is invalid
@@ -152,15 +155,32 @@ class AuthTest < ActiveSupport::TestCase
   # --------------------------------------------------------------------------- #
   # PUT tests
 
-  # Test put for authentication token
+  # # Test put for authentication token
   def test_auth_put
     data_to_put = {
       username: 'acain',
       password: 'password'
     }
-    put_json "/api/auth/#{auth_token}", data_to_put
+
+    logger = Logger.new(Rails.root.to_s + '/log/my_test1.log' )
+    
+    header 'username', 'acain'
+    put_json "/api/auth", data_to_put
+
+    # UPDATE
+    # data_to_put = {}
+    # header_to_put = {
+    #   'Username' => 'acain',
+    #   'Auth-Token' => auth_token,
+    #   'CONTENT_TYPE' => 'application/json'
+    # }
+    # puts header_to_put
+    # actual_auth = put_json_new "/api/auth", data_to_put, header_to_put
+    
+    logger.info "request: #{@request}"
     actual_auth = last_response_body['auth_token']
-    expected_auth = User.first.auth_token
+    actual_auth = last_response_body
+    expected_auth = auth_token
     # Check to see if the response auth token matches the auth token that was sent through in put
     assert_equal expected_auth, actual_auth
   end
@@ -170,7 +190,14 @@ class AuthTest < ActiveSupport::TestCase
     data_to_put = {
       username: 'acain',
     }
-    
+    # UPDATE - Check passing headers
+    # process(put, "/api/auth", params: nil, headers: {username: 'acain', auth_token: '1234'}, env: nil, xhr: false, as: nil)
+    # data_to_put = nil
+    # header_to_put = {
+    #   'username' => 'acain',
+    #   'auth_token' => '1234'
+    # }
+    # put_json "/api/auth", data_to_put, header_to_put
     put_json "/api/auth/1234", data_to_put
     actual_auth = last_response_body
     expected_auth = User.first.auth_token
@@ -244,6 +271,21 @@ class AuthTest < ActiveSupport::TestCase
     delete "/api/auth/#{auth_token}.json", 'CONTENT_TYPE' => 'application/json'
     # 200 response code means success!
     assert_equal 200, last_response.status
+  end
+
+  def test_token_signout_works_with_multiple
+    user = FactoryBot.create(:user)
+    # Create 2 auth tokens
+    t1 = user.generate_authentication_token!
+    t2 = user.generate_authentication_token!
+    
+    # Sign out one
+    delete "/api/auth/#{t1.auth_token}.json", 'CONTENT_TYPE' => 'application/json'
+    
+    t2.reload
+    refute t2.destroyed?
+
+    assert_raises(ActiveRecord::RecordNotFound) { t1.reload }
   end
   # End DELETE tests
   # --------------------------------------------------------------------------- #
